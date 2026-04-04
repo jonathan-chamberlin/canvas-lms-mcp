@@ -161,6 +161,17 @@ class Tab(BaseModel):
     visibility: Optional[str] = None
 
 
+class Group(BaseModel):
+    id: int
+    name: Optional[str] = None
+    description: Optional[str] = None
+    members_count: Optional[int] = None
+    context_type: Optional[str] = None
+    course_id: Optional[int] = None
+    group_category_id: Optional[int] = None
+    created_at: Optional[datetime] = None
+
+
 class File(BaseModel):
     id: int
     name: Optional[str] = None

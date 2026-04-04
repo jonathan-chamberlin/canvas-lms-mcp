@@ -14,6 +14,7 @@ from canvas_lms_mcp.schema import (
     Discussion,
     Enrollment,
     File,
+    Group,
     Module,
     ModuleItem,
     Page,
@@ -584,6 +585,64 @@ async def list_favorites() -> dict:
     response = await client.get("/api/v1/users/self/favorites/courses")
     items = [Course.model_validate(item).model_dump() for item in response]
     return {"items": items, "total": len(items)}
+
+
+@mcp.tool()
+async def list_groups(
+    course_id: Optional[int] = None,
+) -> dict:
+    """
+    List groups the current user belongs to, optionally filtered by course.
+
+    Args:
+        course_id: Optional course ID to filter groups by
+
+    Returns:
+        Dict with group items
+    """
+    client = CanvasClient.get_instance()
+
+    if course_id:
+        response = await client.get(
+            f"/api/v1/courses/{course_id}/groups",
+            params={"per_page": 100},
+        )
+    else:
+        response = await client.get(
+            "/api/v1/users/self/groups",
+            params={"per_page": 100},
+        )
+
+    items = [Group.model_validate(item).model_dump() for item in response]
+    return {"items": items, "total": len(items)}
+
+
+@mcp.tool()
+async def upload_group_file(
+    group_id: int,
+    file_path: str,
+    file_name: str,
+) -> dict:
+    """
+    Upload a file to a Canvas group's file area.
+
+    Canvas uses a 3-step upload process: notify, upload bytes, confirm.
+
+    Args:
+        group_id: The Canvas group ID to upload to
+        file_path: Absolute path to the local file to upload
+        file_name: Desired filename on Canvas (e.g., "JonathanC.unit4roughdraft.doc")
+
+    Returns:
+        File object from Canvas confirming the upload
+    """
+    client = CanvasClient.get_instance()
+    result = await client.upload_file_to_endpoint(
+        f"/api/v1/groups/{group_id}/files",
+        file_path,
+        file_name,
+    )
+    return result
 
 
 if __name__ == "__main__":

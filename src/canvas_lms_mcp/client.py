@@ -57,6 +57,68 @@ class CanvasClient:
         response.raise_for_status()
         return response.json()
 
+    async def post_multipart(
+        self, url: str, data: Dict[str, Any], file_path: str, file_field: str = "file"
+    ) -> httpx.Response:
+        """Upload a file via multipart form data to an arbitrary URL (no base_url prefix)."""
+        import mimetypes
+        import os
+
+        filename = os.path.basename(file_path)
+        content_type = mimetypes.guess_type(file_path)[0] or "application/octet-stream"
+
+        with open(file_path, "rb") as f:
+            files = {file_field: (filename, f, content_type)}
+            # Use a fresh client without the JSON content-type header
+            async with httpx.AsyncClient() as upload_client:
+                response = await upload_client.post(url, data=data, files=files)
+                response.raise_for_status()
+                return response
+
+    async def upload_file_to_endpoint(
+        self, endpoint: str, file_path: str, file_name: str
+    ) -> Dict[str, Any]:
+        """Canvas 3-step file upload: notify, upload bytes, confirm.
+
+        Args:
+            endpoint: Canvas API endpoint to initiate upload (e.g., /api/v1/groups/{id}/files)
+            file_path: Local path to the file to upload
+            file_name: Desired filename on Canvas
+
+        Returns:
+            File object dict from Canvas
+        """
+        import os
+
+        file_size = os.path.getsize(file_path)
+
+        # Step 1: Tell Canvas about the file
+        step1_response = await self.post(endpoint, {
+            "name": file_name,
+            "size": file_size,
+        })
+
+        upload_url = step1_response["upload_url"]
+        upload_params = step1_response.get("upload_params", {})
+
+        # Step 2: POST the file to the upload URL
+        step2_response = await self.post_multipart(
+            upload_url, upload_params, file_path
+        )
+
+        # Step 3: Canvas may return the file directly (201) or a redirect (3xx)
+        if step2_response.status_code in (200, 201):
+            return step2_response.json()
+
+        # Handle redirect confirmation
+        if step2_response.status_code in (301, 302, 303):
+            confirm_url = step2_response.headers["Location"]
+            confirm_response = await self.client.get(confirm_url)
+            confirm_response.raise_for_status()
+            return confirm_response.json()
+
+        return step2_response.json()
+
     async def delete(self, endpoint: str) -> Dict[str, Any]:
         """Make a DELETE request to the Canvas API."""
         response = await self.client.delete(endpoint)
