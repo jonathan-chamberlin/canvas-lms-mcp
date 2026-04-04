@@ -209,6 +209,7 @@ async def list_courses(
     params = {}
     params["enrollment_type"] = "student"
     params["enrollment_state"] = "active"
+    params["per_page"] = 100
 
     response = await client.get("/api/v1/courses", params=params)
 
