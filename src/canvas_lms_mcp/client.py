@@ -1,6 +1,17 @@
+import re
 from typing import Any, Dict, Optional
 
 import httpx
+
+_LINK_NEXT_RE = re.compile(r'<([^>]+)>\s*;\s*rel="next"')
+
+
+def _next_link(link_header: Optional[str]) -> Optional[str]:
+    """Extract the rel="next" URL from a Canvas Link header, if present."""
+    if not link_header:
+        return None
+    match = _LINK_NEXT_RE.search(link_header)
+    return match.group(1) if match else None
 
 
 class CanvasClient:
@@ -39,11 +50,53 @@ class CanvasClient:
 
     async def get(
         self, endpoint: str, params: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
-        """Make a GET request to the Canvas API."""
+    ) -> Any:
+        """Make a GET request to the Canvas API (single page)."""
         response = await self.client.get(endpoint, params=params)
         response.raise_for_status()
         return response.json()
+
+    async def get_all(
+        self,
+        endpoint: str,
+        params: Optional[Dict[str, Any]] = None,
+        max_pages: int = 50,
+    ) -> list:
+        """GET a list endpoint and follow Canvas Link-header pagination.
+
+        Canvas returns a `Link` header with rel="next" on paginated list
+        endpoints. Walk it to collect every page into a single list. Bounded
+        by ``max_pages`` to avoid runaway loops on a misbehaving server.
+
+        Assumes the endpoint returns a JSON array. Raises ValueError if the
+        first response is not a list.
+        """
+        merged_params = dict(params or {})
+        merged_params.setdefault("per_page", 100)
+
+        response = await self.client.get(endpoint, params=merged_params)
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, list):
+            raise ValueError(
+                f"get_all expected a JSON array from {endpoint}, "
+                f"got {type(payload).__name__}"
+            )
+
+        results: list = list(payload)
+        pages = 1
+        next_url = _next_link(response.headers.get("link"))
+        while next_url and pages < max_pages:
+            # Canvas next URLs are absolute; httpx handles absolute URLs fine.
+            response = await self.client.get(next_url)
+            response.raise_for_status()
+            chunk = response.json()
+            if not isinstance(chunk, list):
+                break
+            results.extend(chunk)
+            pages += 1
+            next_url = _next_link(response.headers.get("link"))
+        return results
 
     async def post(self, endpoint: str, data: Dict[str, Any]) -> Dict[str, Any]:
         """Make a POST request to the Canvas API."""

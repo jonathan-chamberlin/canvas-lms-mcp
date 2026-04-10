@@ -1,7 +1,8 @@
 import logging
 import os
-from typing import List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
+import httpx
 from fastmcp import FastMCP
 
 from canvas_lms_mcp.client import CanvasClient
@@ -223,36 +224,85 @@ async def list_courses(
 async def list_files(
     course_id: Optional[int] = None,
     folder_id: Optional[int] = None,
+    group_id: Optional[int] = None,
     include: Optional[List[str]] = None,
+    search_term: Optional[str] = None,
+    max_pages: int = 20,
     page: int = 1,
     items_per_page: int = 10,
 ) -> PaginatedResponse[File]:
     """
-    List files for a course or folder.
+    List files for a course, folder, or group.
+
+    Exactly one scope may be provided. If none is given, the authenticated
+    user's personal files are returned. Results are paginated locally by
+    (page, items_per_page) after fetching up to ``max_pages`` server pages.
 
     Args:
         course_id: Optional Course ID
         folder_id: Optional Folder ID
+        group_id: Optional Group ID (caller must be a member of the group)
         include: Optional list of additional data to include
-        page: Page number (1-indexed)
-        items_per_page: Number of items per page
+        search_term: Optional Canvas-side filename search (min 2 chars)
+        max_pages: Maximum server pages to fetch (safety cap; 100/page)
+        page: Page number (1-indexed) for the returned slice
+        items_per_page: Number of items per page in the returned slice
 
     Returns:
         PaginatedResponse[File]
+
+    Raises:
+        ValueError: if more than one of course_id/folder_id/group_id is provided.
+        PermissionError: if the caller is not authorized (e.g., not a group member).
+        LookupError: if the target resource is not found.
     """
+    scopes = [
+        ("course_id", course_id),
+        ("folder_id", folder_id),
+        ("group_id", group_id),
+    ]
+    provided = [name for name, value in scopes if value is not None]
+    if len(provided) > 1:
+        raise ValueError(
+            "list_files accepts at most one of "
+            f"course_id/folder_id/group_id; got {provided}"
+        )
+
+    if search_term is not None and len(search_term) < 2:
+        raise ValueError("search_term must be at least 2 characters")
+    if max_pages < 1:
+        raise ValueError("max_pages must be >= 1")
+
     client = CanvasClient.get_instance()
-    params = {}
+    params: Dict[str, Any] = {"per_page": 100}
     if include:
         params["include[]"] = include
+    if search_term:
+        params["search_term"] = search_term
 
-    if course_id:
+    if course_id is not None:
         endpoint = f"/api/v1/courses/{course_id}/files"
-    elif folder_id:
+    elif folder_id is not None:
         endpoint = f"/api/v1/folders/{folder_id}/files"
+    elif group_id is not None:
+        endpoint = f"/api/v1/groups/{group_id}/files"
     else:
         endpoint = "/api/v1/users/self/files"
 
-    response = await client.get(endpoint, params=params)
+    try:
+        response = await client.get_all(endpoint, params=params, max_pages=max_pages)
+    except httpx.HTTPStatusError as e:
+        status = e.response.status_code
+        if status in (401, 403):
+            raise PermissionError(
+                f"Not authorized to list files at {endpoint}. "
+                f"For groups, you must be a member. Canvas said: {e.response.text}"
+            ) from e
+        if status == 404:
+            raise LookupError(
+                f"Resource not found: {endpoint}. Canvas said: {e.response.text}"
+            ) from e
+        raise
 
     items = [File.model_validate(item) for item in response]
     return await paginate_response(items, page, items_per_page)
