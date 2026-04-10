@@ -672,23 +672,38 @@ async def upload_group_file(
     group_id: int,
     file_path: str,
     file_name: str,
+    folder_id: Optional[int] = None,
 ) -> dict:
     """
     Upload a file to a Canvas group's file area.
 
     Canvas uses a 3-step upload process: notify, upload bytes, confirm.
 
+    The file is uploaded into the group's root "files" folder by default so
+    it appears alongside other group files. Posting directly to
+    /api/v1/groups/{id}/files sometimes routes uploads into an orphan
+    subfolder that isn't visible in the Canvas UI, so this tool resolves
+    the root folder id first and uploads to /api/v1/folders/{id}/files.
+
     Args:
         group_id: The Canvas group ID to upload to
         file_path: Absolute path to the local file to upload
         file_name: Desired filename on Canvas (e.g., "JonathanC.unit4roughdraft.doc")
+        folder_id: Optional specific folder to upload into. If omitted, the
+            group's root folder is resolved automatically.
 
     Returns:
         File object from Canvas confirming the upload
     """
     client = CanvasClient.get_instance()
+
+    target_folder_id = folder_id
+    if target_folder_id is None:
+        root = await client.get(f"/api/v1/groups/{group_id}/folders/root")
+        target_folder_id = root["id"]
+
     result = await client.upload_file_to_endpoint(
-        f"/api/v1/groups/{group_id}/files",
+        f"/api/v1/folders/{target_folder_id}/files",
         file_path,
         file_name,
     )
